@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -24,7 +24,13 @@ afterEach(() => {
 describe("repoRoot", () => {
   it("resolves the top-level directory of a repo", () => {
     repo = createTempRepo();
-    expect(repoRoot(repo.dir).toLowerCase()).toBe(repo.dir.replace(/\\/g, "/").toLowerCase());
+    // Compare against the realpath, not the raw temp-dir path: on macOS
+    // the OS temp dir is a symlink (/var -> /private/var), and on Windows
+    // the raw path can use an 8.3 short name (RUNNER~1) that differs from
+    // what git itself resolves to. `git rev-parse --show-toplevel` always
+    // returns the canonical form, same as realpathSync.
+    const expected = realpathSync(repo.dir).replace(/\\/g, "/").toLowerCase();
+    expect(repoRoot(repo.dir).toLowerCase()).toBe(expected);
   });
 
   it("throws NotAGitRepoError outside of a repository", () => {
