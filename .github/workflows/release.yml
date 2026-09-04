@@ -25,6 +25,10 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      # npm Trusted Publishing (OIDC) requires npm 11.5.1+; Node 20 bundles
+      # an older npm by default.
+      - run: npm install -g npm@latest
+
       - run: npm ci
 
       - run: npm run typecheck
@@ -36,17 +40,15 @@ jobs:
       # a "Version Packages" PR. Once that PR is merged (which consumes the
       # changesets and bumps package.json), this step publishes to npm
       # instead. Either way, nothing publishes on an ordinary push.
+      #
+      # Publishing uses npm Trusted Publishing (OIDC) — configured on
+      # npmjs.com against this exact repo/workflow — instead of a stored
+      # token. No NPM_TOKEN/NODE_AUTH_TOKEN here on purpose: setting either
+      # makes changesets/action prefer classic token auth over OIDC.
+      # `id-token: write` above is what makes the OIDC token available.
       - name: Create release PR or publish to npm
         uses: changesets/action@v1
         with:
           publish: npm run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # NODE_AUTH_TOKEN is what npm's own .npmrc (wired up by setup-node)
-          # actually authenticates with. NPM_TOKEN is also required: changesets/action
-          # checks for that exact variable name to decide whether to use classic
-          # token auth or attempt OIDC "trusted publishing" instead — without it,
-          # it silently prefers OIDC and fails, since no trusted publisher is
-          # configured on npmjs.com for this package.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
