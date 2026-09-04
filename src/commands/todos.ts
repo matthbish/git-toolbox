@@ -1,7 +1,7 @@
 import { Command } from "commander";
-import { repoRoot, defaultRemoteBranch } from "../lib/git.js";
-import { run } from "../lib/exec.js";
+import { repoRoot, mainOrMasterBranch, diffAgainstWorkingTree } from "../lib/git.js";
 import { UsageError } from "../lib/errors.js";
+import { getLastAgainst, setLastAgainst, branchMemoryHelpText } from "../lib/state.js";
 
 /** Pure parsing logic, kept separate from git/IO so it's easy to unit test. */
 export function extractAddedTodos(diff: string): Record<string, string[]> {
@@ -35,10 +35,12 @@ export function extractAddedTodos(diff: string): Record<string, string[]> {
  *
  * Lists TODO comments added on the current branch relative to another
  * branch — a quick way to catch "TODO: fix before merging" comments that
- * are about to ship.
+ * are about to ship. Covers pushed commits, unpushed commits, and any
+ * staged or unstaged changes in the working tree.
  *
- * Diffs against the repository's detected default branch unless --against
- * is given.
+ * Diffs against, in order: the branch passed via --against; failing that,
+ * whatever branch was last passed to --against for this repo; failing
+ * that, "main" if it exists, else "master".
  *
  * Examples:
  *   git-toolbox todos
@@ -48,18 +50,27 @@ export function registerTodos(program: Command): void {
   program
     .command("todos")
     .description("List TODO comments added on this branch vs. another branch.")
-    .option("--against <branch>", "branch to diff against (defaults to the repo's default branch)")
+    .option(
+      "--against <branch>",
+      "branch to diff against (defaults to the last branch used, then 'main'/'master')",
+    )
+    .addHelpText("after", branchMemoryHelpText("todos"))
     .action((options: { against?: string }) => {
       const cwd = repoRoot();
-      const against = options.against ?? defaultRemoteBranch(cwd);
+      const against = options.against ?? getLastAgainst(cwd, "todos") ?? mainOrMasterBranch(cwd);
 
       if (!against) {
         throw new UsageError(
-          "Could not determine the repository's default branch; pass --against <branch>.",
+          "Could not determine a branch to diff against (no remembered branch, and " +
+            "neither 'main' nor 'master' exists); pass --against <branch>.",
         );
       }
 
-      const diff = run("git", ["diff", `${against}...`, "--unified=0"], { cwd });
+      if (options.against) {
+        setLastAgainst(cwd, "todos", options.against);
+      }
+
+      const diff = diffAgainstWorkingTree(cwd, against, ["--unified=0"]);
       const todosByFile = extractAddedTodos(diff);
       const files = Object.keys(todosByFile);
 

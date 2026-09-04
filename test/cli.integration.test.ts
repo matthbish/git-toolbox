@@ -167,6 +167,102 @@ describe("diff-export", () => {
     expect(existsSync(outFile)).toBe(true);
     expect(readFileSync(outFile, "utf-8")).toMatch(/new\.txt/);
   });
+
+  it("remembers an explicit --against for the next invocation", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "release"]);
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "new.txt"), "hello");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "add new file"]);
+
+    const firstOut = join(repo.dir, "first.patch");
+    const first = runCli(["diff-export", "--against", "release", "--out", firstOut], repo.dir);
+    expect(first.status).toBe(0);
+    expect(readFileSync(firstOut, "utf-8")).toMatch(/new\.txt/);
+
+    const secondOut = join(repo.dir, "second.patch");
+    const second = runCli(["diff-export", "--out", secondOut], repo.dir);
+    expect(second.status).toBe(0);
+    expect(readFileSync(secondOut, "utf-8")).toMatch(/new\.txt/);
+  });
+
+  it("falls back to 'master' when 'main' doesn't exist", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "-m", "main", "master"]);
+    git(repo.dir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "new.txt"), "hello");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "add new file"]);
+
+    const outFile = join(repo.dir, "out.patch");
+    const result = runCli(["diff-export", "--out", outFile], repo.dir);
+
+    expect(result.status).toBe(0);
+    expect(existsSync(outFile)).toBe(true);
+    expect(readFileSync(outFile, "utf-8")).toMatch(/new\.txt/);
+  });
+
+  it("errors with guidance when nothing to diff against can be found", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "-m", "main", "trunk"]);
+    git(repo.dir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    const result = runCli(["diff-export"], repo.dir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/pass --against/);
+  });
+
+  it("includes staged and unstaged changes alongside committed ones", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "committed.txt"), "committed");
+    writeFileSync(join(repo.dir, "tracked.txt"), "original");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "add committed and tracked files"]);
+
+    writeFileSync(join(repo.dir, "staged.txt"), "staged");
+    git(repo.dir, ["add", "--all"]);
+    writeFileSync(join(repo.dir, "tracked.txt"), "modified");
+
+    const outFile = join(repo.dir, "out.patch");
+    const result = runCli(["diff-export", "--out", outFile], repo.dir);
+
+    expect(result.status).toBe(0);
+    const patch = readFileSync(outFile, "utf-8");
+    expect(patch).toMatch(/committed\.txt/);
+    expect(patch).toMatch(/staged\.txt/);
+    expect(patch).toMatch(/tracked\.txt/);
+  });
+
+  it("keeps its own remembered branch separate from todos'", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "release"]);
+    git(repo.dir, ["branch", "hotfix"]);
+    // Avoid a slash in the branch name: diff-export's default output path
+    // is "<branch>-vs-<against>.patch", and a slash there would need an
+    // extra directory to exist.
+    git(repo.dir, ["checkout", "-b", "work"]);
+    writeFileSync(join(repo.dir, "code.ts"), "// TODO: finish this\n");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "wip"]);
+
+    runCli(["diff-export", "--against", "release", "--out", join(repo.dir, "a.patch")], repo.dir);
+    runCli(["todos", "--against", "hotfix"], repo.dir);
+
+    // diff-export remembered 'release': confirmed via its default output
+    // filename, which embeds the against-branch name.
+    const diffExportResult = runCli(["diff-export"], repo.dir);
+    expect(diffExportResult.status).toBe(0);
+    expect(existsSync(join(repo.dir, "work-vs-release.patch"))).toBe(true);
+
+    // todos remembered 'hotfix' independently, confirmed via its own output.
+    const todosResult = runCli(["todos"], repo.dir);
+    expect(todosResult.status).toBe(0);
+    expect(todosResult.stdout).toMatch(/vs 'hotfix'/);
+  });
 });
 
 describe("todos", () => {
@@ -195,6 +291,71 @@ describe("todos", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toMatch(/No added TODOs/);
+  });
+
+  it("remembers an explicit --against for the next invocation", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "release"]);
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "code.ts"), "// TODO: finish this\n");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "wip"]);
+
+    const first = runCli(["todos", "--against", "release"], repo.dir);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toMatch(/vs 'release'/);
+
+    const second = runCli(["todos"], repo.dir);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toMatch(/vs 'release'/);
+  });
+
+  it("falls back to 'master' when 'main' doesn't exist", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "-m", "main", "master"]);
+    // The remote-tracking ref survives a local rename; remove it so
+    // 'main' is genuinely gone rather than still resolving via origin/main.
+    git(repo.dir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "code.ts"), "// TODO: finish this\n");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "wip"]);
+
+    const result = runCli(["todos"], repo.dir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/vs 'master'/);
+  });
+
+  it("errors with guidance when nothing to diff against can be found", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "-m", "main", "trunk"]);
+    git(repo.dir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    const result = runCli(["todos"], repo.dir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/pass --against/);
+  });
+
+  it("reports TODOs from staged and unstaged changes, not just commits", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "tracked.ts"), "console.log('hi');\n");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "wip"]);
+
+    writeFileSync(join(repo.dir, "staged.ts"), "// TODO: staged one\n");
+    git(repo.dir, ["add", "--all"]);
+    writeFileSync(join(repo.dir, "tracked.ts"), "console.log('hi');\n// TODO: unstaged one\n");
+
+    const result = runCli(["todos"], repo.dir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/staged\.ts/);
+    expect(result.stdout).toMatch(/TODO: staged one/);
+    expect(result.stdout).toMatch(/tracked\.ts/);
+    expect(result.stdout).toMatch(/TODO: unstaged one/);
   });
 });
 

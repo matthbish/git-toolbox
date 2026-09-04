@@ -1,19 +1,22 @@
 import { Command } from "commander";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { repoRoot, currentBranch, defaultRemoteBranch } from "../lib/git.js";
-import { run } from "../lib/exec.js";
+import { repoRoot, currentBranch, mainOrMasterBranch, diffAgainstWorkingTree } from "../lib/git.js";
 import { UsageError } from "../lib/errors.js";
+import { getLastAgainst, setLastAgainst, branchMemoryHelpText } from "../lib/state.js";
 
 /**
  * `git-toolbox diff-export`
  *
  * Saves the diff between the current branch and another branch to a patch
  * file — useful for sharing a change outside of git (email, a ticket,
- * offline review) or archiving it before an interactive rebase.
+ * offline review) or archiving it before an interactive rebase. Covers
+ * pushed commits, unpushed commits, and any staged or unstaged changes
+ * in the working tree.
  *
- * Diffs against the repository's detected default branch (via
- * origin/HEAD) unless --against is given.
+ * Diffs against, in order: the branch passed via --against; failing that,
+ * whatever branch was last passed to --against for this repo; failing
+ * that, "main" if it exists, else "master".
  *
  * Examples:
  *   git-toolbox diff-export
@@ -23,20 +26,30 @@ export function registerDiffExport(program: Command): void {
   program
     .command("diff-export")
     .description("Save the diff against another branch to a patch file.")
-    .option("--against <branch>", "branch to diff against (defaults to the repo's default branch)")
+    .option(
+      "--against <branch>",
+      "branch to diff against (defaults to the last branch used, then 'main'/'master')",
+    )
     .option("--out <file>", "output path (defaults to <branch>-vs-<against>.patch)")
+    .addHelpText("after", branchMemoryHelpText("diff-export"))
     .action((options: { against?: string; out?: string }) => {
       const cwd = repoRoot();
       const branch = currentBranch(cwd);
-      const against = options.against ?? defaultRemoteBranch(cwd);
+      const against =
+        options.against ?? getLastAgainst(cwd, "diff-export") ?? mainOrMasterBranch(cwd);
 
       if (!against) {
         throw new UsageError(
-          "Could not determine the repository's default branch; pass --against <branch>.",
+          "Could not determine a branch to diff against (no remembered branch, and " +
+            "neither 'main' nor 'master' exists); pass --against <branch>.",
         );
       }
 
-      const diff = run("git", ["diff", `${against}...`], { cwd });
+      if (options.against) {
+        setLastAgainst(cwd, "diff-export", options.against);
+      }
+
+      const diff = diffAgainstWorkingTree(cwd, against);
       const outPath = resolve(options.out ?? `${branch}-vs-${against}.patch`);
 
       writeFileSync(outPath, `${diff}\n`, "utf-8");
