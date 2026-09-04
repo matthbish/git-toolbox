@@ -42,4 +42,11 @@ jobs:
           publish: npm run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # NODE_AUTH_TOKEN is what npm's own .npmrc (wired up by setup-node)
+          # actually authenticates with. NPM_TOKEN is also required: changesets/action
+          # checks for that exact variable name to decide whether to use classic
+          # token auth or attempt OIDC "trusted publishing" instead — without it,
+          # it silently prefers OIDC and fails, since no trusted publisher is
+          # configured on npmjs.com for this package.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
