@@ -1,6 +1,6 @@
 {
   "name": "@matthbish/git-toolbox",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Everyday git workflow shortcuts: push, pull, amend, squash, clean up branches, export diffs, and find added TODOs — as one small CLI.",
   "keywords": [
     "git",
