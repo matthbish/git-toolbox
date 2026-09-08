@@ -96,6 +96,29 @@ describe("amend", () => {
     expect(result.status).toBe(0);
     expect(git(repo.dir, ["log", "-1", "--pretty=%s"])).toBe("new message");
   });
+
+  it("force-pushes with a plain --force, overwriting a remote that has diverged", () => {
+    repo = createTempRepo();
+
+    // Simulate someone else pushing to origin after our last fetch.
+    const otherClone = join(repo.dir, "..", "other-clone");
+    spawnSync("git", ["clone", repo.remoteDir, otherClone]);
+    git(otherClone, ["config", "user.name", "Other"]);
+    git(otherClone, ["config", "user.email", "other@example.com"]);
+    writeFileSync(join(otherClone, "from-other.txt"), "x");
+    git(otherClone, ["add", "--all"]);
+    git(otherClone, ["commit", "-m", "from other"]);
+    git(otherClone, ["push", "origin", "main"]);
+
+    // Our clone never fetched that commit — --force-with-lease would refuse
+    // to push here, since it can't confirm the remote is still what we last saw.
+    writeFileSync(join(repo.dir, "extra.txt"), "extra");
+    const result = runCli(["amend"], repo.dir);
+
+    expect(result.status).toBe(0);
+    expect(git(repo.remoteDir, ["rev-list", "--count", "main"])).toBe("1");
+    expect(git(repo.remoteDir, ["log", "-1", "--pretty=%s"])).toBe("initial commit");
+  });
 });
 
 describe("squash", () => {
@@ -120,6 +143,37 @@ describe("squash", () => {
     const result = runCli(["squash", "99", "message"], repo.dir);
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(/only has 1 commit/);
+  });
+
+  it("force-pushes with a plain --force, overwriting a remote that has diverged", () => {
+    repo = createTempRepo();
+    // Two unpushed commits on top of the initial one, so squashing the last
+    // 2 leaves the root commit as the reset target for `HEAD~2`.
+    writeFileSync(join(repo.dir, "second.txt"), "second");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "second"]);
+    writeFileSync(join(repo.dir, "third.txt"), "third");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "third"]);
+
+    // Simulate someone else pushing to origin after our last fetch — origin
+    // only has the initial commit at this point, since ours are unpushed.
+    const otherClone = join(repo.dir, "..", "other-clone");
+    spawnSync("git", ["clone", repo.remoteDir, otherClone]);
+    git(otherClone, ["config", "user.name", "Other"]);
+    git(otherClone, ["config", "user.email", "other@example.com"]);
+    writeFileSync(join(otherClone, "from-other.txt"), "x");
+    git(otherClone, ["add", "--all"]);
+    git(otherClone, ["commit", "-m", "from other"]);
+    git(otherClone, ["push", "origin", "main"]);
+
+    // --force-with-lease would refuse this push, since origin moved past
+    // what our clone last saw.
+    const result = runCli(["squash", "2", "combined"], repo.dir);
+
+    expect(result.status).toBe(0);
+    expect(git(repo.remoteDir, ["rev-list", "--count", "main"])).toBe("2");
+    expect(git(repo.remoteDir, ["log", "-1", "--pretty=%s"])).toBe("combined");
   });
 });
 
@@ -171,6 +225,7 @@ describe("diff-export", () => {
   it("remembers an explicit --against for the next invocation", () => {
     repo = createTempRepo();
     git(repo.dir, ["branch", "release"]);
+    git(repo.dir, ["push", "origin", "release"]);
     git(repo.dir, ["checkout", "-b", "feature/x"]);
     writeFileSync(join(repo.dir, "new.txt"), "hello");
     git(repo.dir, ["add", "--all"]);
@@ -190,6 +245,7 @@ describe("diff-export", () => {
   it("falls back to 'master' when 'main' doesn't exist", () => {
     repo = createTempRepo();
     git(repo.dir, ["branch", "-m", "main", "master"]);
+    git(repo.dir, ["push", "origin", "master"]);
     git(repo.dir, ["update-ref", "-d", "refs/remotes/origin/main"]);
     git(repo.dir, ["checkout", "-b", "feature/x"]);
     writeFileSync(join(repo.dir, "new.txt"), "hello");
@@ -202,6 +258,80 @@ describe("diff-export", () => {
     expect(result.status).toBe(0);
     expect(existsSync(outFile)).toBe(true);
     expect(readFileSync(outFile, "utf-8")).toMatch(/new\.txt/);
+  });
+
+  it("diffs against the remote's copy of the branch, not a diverged local branch of the same name", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "release"]);
+    git(repo.dir, ["push", "origin", "release"]);
+
+    writeFileSync(join(repo.dir, "shared.txt"), "shared");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "shared work"]);
+
+    // Fast-forward the local 'release' branch past the shared commit,
+    // without ever pushing it — origin's copy stays behind.
+    git(repo.dir, ["branch", "-f", "release", "main"]);
+
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "new.txt"), "hello");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "add new file"]);
+
+    const outFile = join(repo.dir, "out.patch");
+    const result = runCli(["diff-export", "--against", "release", "--out", outFile], repo.dir);
+
+    expect(result.status).toBe(0);
+    const patch = readFileSync(outFile, "utf-8");
+    // Diffed against origin/release (still before the shared commit), so the
+    // shared commit is part of what's new since the fork point — it would
+    // NOT be if this had (incorrectly) used the local 'release' branch,
+    // which was fast-forwarded past it.
+    expect(patch).toMatch(/shared\.txt/);
+    expect(patch).toMatch(/new\.txt/);
+  });
+
+  it("--remote selects which remote's copy of the branch to diff against", () => {
+    repo = createTempRepo();
+    const upstreamDir = join(repo.dir, "..", "upstream.git");
+    spawnSync("git", ["init", "--bare", "-b", "main", upstreamDir]);
+    git(repo.dir, ["remote", "add", "upstream", upstreamDir]);
+
+    git(repo.dir, ["branch", "release"]);
+    git(repo.dir, ["push", "origin", "release"]);
+
+    writeFileSync(join(repo.dir, "shared.txt"), "shared");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "shared work"]);
+    git(repo.dir, ["branch", "-f", "release", "main"]);
+    // upstream's 'release' includes the shared commit; origin's doesn't.
+    git(repo.dir, ["push", "upstream", "release"]);
+
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "new.txt"), "hello");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "add new file"]);
+
+    const outFile = join(repo.dir, "out.patch");
+    const result = runCli(
+      ["diff-export", "--against", "release", "--remote", "upstream", "--out", outFile],
+      repo.dir,
+    );
+
+    expect(result.status).toBe(0);
+    const patch = readFileSync(outFile, "utf-8");
+    expect(patch).not.toMatch(/shared\.txt/);
+    expect(patch).toMatch(/new\.txt/);
+  });
+
+  it("errors clearly when the branch doesn't exist on the resolved remote", () => {
+    repo = createTempRepo();
+    git(repo.dir, ["branch", "release"]); // local only, never pushed
+
+    const result = runCli(["diff-export", "--against", "release"], repo.dir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/release/);
   });
 
   it("errors with guidance when nothing to diff against can be found", () => {
@@ -241,6 +371,8 @@ describe("diff-export", () => {
     repo = createTempRepo();
     git(repo.dir, ["branch", "release"]);
     git(repo.dir, ["branch", "hotfix"]);
+    git(repo.dir, ["push", "origin", "release"]);
+    git(repo.dir, ["push", "origin", "hotfix"]);
     // Avoid a slash in the branch name: diff-export's default output path
     // is "<branch>-vs-<against>.patch", and a slash there would need an
     // extra directory to exist.
@@ -261,7 +393,7 @@ describe("diff-export", () => {
     // todos remembered 'hotfix' independently, confirmed via its own output.
     const todosResult = runCli(["todos"], repo.dir);
     expect(todosResult.status).toBe(0);
-    expect(todosResult.stdout).toMatch(/vs 'hotfix'/);
+    expect(todosResult.stdout).toMatch(/vs 'origin\/hotfix'/);
   });
 });
 
@@ -296,6 +428,7 @@ describe("todos", () => {
   it("remembers an explicit --against for the next invocation", () => {
     repo = createTempRepo();
     git(repo.dir, ["branch", "release"]);
+    git(repo.dir, ["push", "origin", "release"]);
     git(repo.dir, ["checkout", "-b", "feature/x"]);
     writeFileSync(join(repo.dir, "code.ts"), "// TODO: finish this\n");
     git(repo.dir, ["add", "--all"]);
@@ -303,16 +436,38 @@ describe("todos", () => {
 
     const first = runCli(["todos", "--against", "release"], repo.dir);
     expect(first.status).toBe(0);
-    expect(first.stdout).toMatch(/vs 'release'/);
+    expect(first.stdout).toMatch(/vs 'origin\/release'/);
 
     const second = runCli(["todos"], repo.dir);
     expect(second.status).toBe(0);
-    expect(second.stdout).toMatch(/vs 'release'/);
+    expect(second.stdout).toMatch(/vs 'origin\/release'/);
+  });
+
+  it("remembers an explicit --remote for the next invocation", () => {
+    repo = createTempRepo();
+    const upstreamDir = join(repo.dir, "..", "upstream.git");
+    spawnSync("git", ["init", "--bare", "-b", "main", upstreamDir]);
+    git(repo.dir, ["remote", "add", "upstream", upstreamDir]);
+    git(repo.dir, ["branch", "release"]);
+    git(repo.dir, ["push", "upstream", "release"]);
+    git(repo.dir, ["checkout", "-b", "feature/x"]);
+    writeFileSync(join(repo.dir, "code.ts"), "// TODO: finish this\n");
+    git(repo.dir, ["add", "--all"]);
+    git(repo.dir, ["commit", "-m", "wip"]);
+
+    const first = runCli(["todos", "--against", "release", "--remote", "upstream"], repo.dir);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toMatch(/vs 'upstream\/release'/);
+
+    const second = runCli(["todos"], repo.dir);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toMatch(/vs 'upstream\/release'/);
   });
 
   it("falls back to 'master' when 'main' doesn't exist", () => {
     repo = createTempRepo();
     git(repo.dir, ["branch", "-m", "main", "master"]);
+    git(repo.dir, ["push", "origin", "master"]);
     // The remote-tracking ref survives a local rename; remove it so
     // 'main' is genuinely gone rather than still resolving via origin/main.
     git(repo.dir, ["update-ref", "-d", "refs/remotes/origin/main"]);
@@ -324,7 +479,7 @@ describe("todos", () => {
     const result = runCli(["todos"], repo.dir);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toMatch(/vs 'master'/);
+    expect(result.stdout).toMatch(/vs 'origin\/master'/);
   });
 
   it("errors with guidance when nothing to diff against can be found", () => {

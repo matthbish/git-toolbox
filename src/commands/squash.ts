@@ -21,8 +21,8 @@ export function parseSquashCount(raw: string, totalCommits: number): number {
  * `git-toolbox squash <count> <message>`
  *
  * Squashes the last `count` commits on the current branch into a single
- * commit with a new message, then force-pushes. Handy for cleaning up a
- * string of "wip" / "fix typo" commits before merging.
+ * commit with a new message, then force-pushes (plain `--force`). Handy
+ * for cleaning up a string of "wip" / "fix typo" commits before merging.
  *
  * Rewrites history on the remote branch — same caution as `amend` applies.
  *
@@ -46,7 +46,7 @@ export function registerSquash(program: Command): void {
 
       runInherit("git", ["reset", "--soft", `HEAD~${count}`], { cwd });
       runInherit("git", ["commit", "-m", message], { cwd });
-      runInherit("git", ["push", "--force-with-lease", "origin", branch], { cwd });
+      runInherit("git", ["push", "--force", "origin", branch], { cwd });
 
       console.log(`Squashed ${count} commits into one and force-pushed '${branch}'.`);
     });
