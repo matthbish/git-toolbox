@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import {
   repoRoot,
   currentBranch,
@@ -11,6 +12,7 @@ import {
   mainOrMasterBranch,
   localBranchesMatching,
   diffAgainstWorkingTree,
+  fetchRemoteRef,
   git,
 } from "../../src/lib/git.js";
 import { NotAGitRepoError } from "../../src/lib/errors.js";
@@ -92,6 +94,65 @@ describe("mainOrMasterBranch", () => {
     git(["branch", "-m", "main", "trunk"], repo.dir);
     git(["update-ref", "-d", "refs/remotes/origin/main"], repo.dir);
     expect(mainOrMasterBranch(repo.dir)).toBeUndefined();
+  });
+
+  it("checks the given remote's copy, not origin's, when a remote is passed", () => {
+    repo = createTempRepo();
+    git(["branch", "-m", "main", "trunk"], repo.dir);
+    git(["update-ref", "-d", "refs/remotes/origin/main"], repo.dir);
+
+    // 'main' doesn't exist locally or on origin, but does on a second remote.
+    const upstreamDir = join(repo.dir, "..", "upstream.git");
+    spawnSync("git", ["init", "--bare", "-b", "main", upstreamDir], { encoding: "utf-8" });
+    git(["remote", "add", "upstream", upstreamDir], repo.dir);
+    git(["push", "upstream", "trunk:main"], repo.dir);
+
+    expect(mainOrMasterBranch(repo.dir, "upstream")).toBe("main");
+  });
+});
+
+describe("fetchRemoteRef", () => {
+  it("fetches the branch and returns its remote-tracking ref", () => {
+    repo = createTempRepo();
+    git(["branch", "release"], repo.dir);
+    git(["push", "origin", "release"], repo.dir);
+
+    const ref = fetchRemoteRef(repo.dir, "origin", "release");
+
+    expect(ref).toBe("origin/release");
+    expect(() => git(["rev-parse", "--verify", "--quiet", ref], repo.dir)).not.toThrow();
+  });
+
+  it("throws when the branch doesn't exist on the remote", () => {
+    repo = createTempRepo();
+    git(["branch", "release"], repo.dir); // local only, never pushed
+    expect(() => fetchRemoteRef(repo.dir, "origin", "release")).toThrow();
+  });
+
+  it("refreshes the tracking ref to the remote's current state, not a stale local one", () => {
+    repo = createTempRepo();
+    git(["branch", "release"], repo.dir);
+    git(["push", "origin", "release"], repo.dir);
+    const before = git(["rev-parse", "origin/release"], repo.dir);
+
+    // Advance the remote's 'release' from a second clone, without this repo
+    // having fetched that change yet.
+    const otherDir = join(repo.dir, "..", "other-clone");
+    spawnSync("git", ["clone", repo.remoteDir, otherDir], { encoding: "utf-8" });
+    spawnSync("git", ["checkout", "release"], { cwd: otherDir });
+    writeFileSync(join(otherDir, "x.txt"), "x");
+    spawnSync("git", ["add", "--all"], { cwd: otherDir });
+    spawnSync(
+      "git",
+      ["-c", "user.name=Other", "-c", "user.email=other@example.com", "commit", "-m", "advance"],
+      { cwd: otherDir },
+    );
+    spawnSync("git", ["push", "origin", "release"], { cwd: otherDir });
+
+    const ref = fetchRemoteRef(repo.dir, "origin", "release");
+    const after = git(["rev-parse", ref], repo.dir);
+
+    expect(after).not.toBe(before);
   });
 });
 

@@ -55,25 +55,35 @@ export function defaultRemoteBranch(cwd: string): string | undefined {
 }
 
 /**
- * Falls back to "main" if it exists (locally or on origin), else "master".
+ * Falls back to "main" if it exists (locally or on `remote`), else "master".
  * Returns undefined if neither exists.
  */
-export function mainOrMasterBranch(cwd: string): string | undefined {
+export function mainOrMasterBranch(cwd: string, remote: string = "origin"): string | undefined {
   for (const name of ["main", "master"]) {
     try {
       git(["rev-parse", "--verify", "--quiet", name], cwd);
       return name;
     } catch {
-      // fall through to checking origin's copy
+      // fall through to checking the remote's copy
     }
     try {
-      git(["rev-parse", "--verify", "--quiet", `origin/${name}`], cwd);
+      git(["rev-parse", "--verify", "--quiet", `${remote}/${name}`], cwd);
       return name;
     } catch {
       // try the next candidate
     }
   }
   return undefined;
+}
+
+/**
+ * Fetches `branch` from `remote` and returns its remote-tracking ref (e.g.
+ * "origin/main") — always the remote's current state, never whatever the
+ * local branch of the same name happens to point at.
+ */
+export function fetchRemoteRef(cwd: string, remote: string, branch: string): string {
+  git(["fetch", remote, branch], cwd);
+  return `${remote}/${branch}`;
 }
 
 /**

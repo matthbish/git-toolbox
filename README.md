@@ -42,15 +42,15 @@ setting the upstream automatically the first time.
 
 ## Commands
 
-| Command                    | What it does                                                                                                                  |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `push <message>`           | Stage all changes, commit, and push the current branch (auto-sets upstream on first push).                                    |
-| `pull`                     | Fetch from origin and pull the current branch.                                                                                |
-| `amend`                    | Stage changes, amend the last commit, and force-push (`--force-with-lease`).                                                  |
-| `squash <count> <message>` | Squash the last `<count>` commits into one and force-push.                                                                    |
-| `clean-branches <prefix>`  | Delete local branches whose name starts with `<prefix>`.                                                                      |
-| `diff-export`              | Save the diff against another branch to a `.patch` file, including uncommitted changes. Remembers `--against` (see below).    |
-| `todos`                    | List TODO comments added on this branch vs. another branch, including uncommitted changes. Remembers `--against` (see below). |
+| Command                    | What it does                                                                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `push <message>`           | Stage all changes, commit, and push the current branch (auto-sets upstream on first push).                                                  |
+| `pull`                     | Fetch from origin and pull the current branch.                                                                                              |
+| `amend`                    | Stage changes, amend the last commit, and force-push (`--force`).                                                                           |
+| `squash <count> <message>` | Squash the last `<count>` commits into one and force-push (`--force`).                                                                      |
+| `clean-branches <prefix>`  | Delete local branches whose name starts with `<prefix>`.                                                                                    |
+| `diff-export`              | Save the diff against another remote branch to a `.patch` file, including uncommitted changes. Remembers `--against`/`--remote` (below).    |
+| `todos`                    | List TODO comments added on this branch vs. another remote branch, including uncommitted changes. Remembers `--against`/`--remote` (below). |
 
 Every command supports `--help` for its full option list, e.g.
 `git-toolbox squash --help`.
@@ -74,21 +74,41 @@ git-toolbox clean-branches review-
 # Export what this branch changed relative to release/2.0
 git-toolbox diff-export --against release/2.0 --out release.patch
 
+# Compare against a different remote's copy of a branch
+git-toolbox todos --against main --remote upstream
+
 # Check for TODOs you're about to ship
 git-toolbox todos
 ```
 
 `diff-export` and `todos` both take an optional `--against <branch>` and
-resolve which branch to diff against in this order. In both cases the diff
-covers everything on top of that branch: commits (pushed or not), staged
-changes, and unstaged changes in the working tree.
+`--remote <remote>`, and resolve which branch and remote to diff against
+in this order. In both cases the diff covers everything on top of that
+branch: commits (pushed or not), staged changes, and unstaged changes in
+the working tree.
+
+`--remote <remote>`:
+
+1. `--remote <remote>`, if you pass it — remembered as that command's
+   default remote for next time.
+2. The remote you last passed to `--remote` for that command, in this
+   repository (see "Branch memory" below).
+3. `origin`.
+
+`--against <branch>`:
 
 1. `--against <branch>`, if you pass it — this is also remembered as that
    command's default for next time.
 2. The branch you last passed to `--against` for that command, in this
    repository (see "Branch memory" below).
-3. `main`, if it exists (checked locally, then as `origin/main`);
+3. `main`, if it exists (checked locally, then on the resolved remote);
    otherwise `master`.
+
+Whichever branch name is resolved, the command always fetches and diffs
+against **the resolved remote's copy of it** (e.g. `origin/main` or
+`upstream/release-2.0`), never the local branch of that name — so the
+comparison reflects what's actually on the remote, even if your local
+branch has drifted from it.
 
 If none of those resolve to anything, the command exits with an error
 telling you to pass `--against <branch>`.
@@ -96,9 +116,10 @@ telling you to pass `--against <branch>`.
 ### Branch memory
 
 `diff-export` and `todos` each remember, per repository, the last branch
-you explicitly passed to `--against` — so once you've run e.g.
-`git-toolbox todos --against release/2.0`, later runs of `git-toolbox
-todos` in that repo reuse `release/2.0` without you typing it again.
+and remote you explicitly passed to `--against`/`--remote` — so once
+you've run e.g. `git-toolbox todos --against release/2.0 --remote
+upstream`, later runs of `git-toolbox todos` in that repo reuse both
+without you typing them again.
 
 This is stored in a plain JSON file, `.git/git-toolbox-state.json`, next
 to the rest of git's own local, untracked state:
@@ -108,43 +129,46 @@ to the rest of git's own local, untracked state:
   "lastAgainstByCommand": {
     "todos": "release/2.0",
     "diff-export": "develop"
+  },
+  "lastRemoteByCommand": {
+    "todos": "upstream"
   }
 }
 ```
 
 It's per-repository and never committed (it lives inside `.git`, which
 git itself never tracks), and per-command — `diff-export` and `todos`
-remember their own choice of `--against` independently. This works
-identically no matter how `git-toolbox` itself is installed (`npm
+remember their own choice of `--against`/`--remote` independently. This
+works identically no matter how `git-toolbox` itself is installed (`npm
 install -g`, `npx`, or run from a source checkout): the file always
 lives inside the repository you're _running the command in_, not
 wherever the tool is installed.
 
-To view, change, or reset the remembered branch:
+To view, change, or reset what's remembered:
 
 ```bash
 # View it
 cat .git/git-toolbox-state.json
 
-# Change it: just pass --against again, it's remembered automatically
-git-toolbox todos --against develop
+# Change it: just pass --against/--remote again, they're remembered automatically
+git-toolbox todos --against develop --remote upstream
 
 # Reset it: delete the command's key (or the whole file) by hand, or:
-git-toolbox todos --against main   # explicitly overwrite it
-rm .git/git-toolbox-state.json     # or wipe all remembered branches
+git-toolbox todos --against main --remote origin   # explicitly overwrite it
+rm .git/git-toolbox-state.json                      # or wipe everything remembered
 ```
 
 Once nothing is remembered, `todos`/`diff-export` fall back to `main`/
-`master` as described above. Run `git-toolbox todos --help` or
+`master` on `origin` as described above. Run `git-toolbox todos --help` or
 `git-toolbox diff-export --help` for this same summary at the command
 line.
 
 ### A note on the history-rewriting commands
 
-`amend` and `squash` force-push (using `--force-with-lease`, which refuses
-to overwrite work you haven't seen). Only use them on branches you're not
-sharing with someone who has already pulled the commits you're about to
-rewrite.
+`amend` and `squash` force-push using a plain `--force`, which overwrites
+whatever is on the remote branch unconditionally. Only use them on
+branches you're not sharing with someone who has already pulled the
+commits you're about to rewrite.
 
 ## Supported platforms
 

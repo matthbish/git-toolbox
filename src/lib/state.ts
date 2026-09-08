@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 interface StateFile {
   lastAgainstByCommand?: Record<string, string>;
+  lastRemoteByCommand?: Record<string, string>;
 }
 
 /**
@@ -30,6 +31,11 @@ function readState(cwd: string): StateFile {
   }
 }
 
+function writeState(cwd: string, state: StateFile): void {
+  mkdirSync(join(cwd, ".git"), { recursive: true });
+  writeFileSync(statePath(cwd), JSON.stringify(state, null, 2));
+}
+
 /** The `--against` branch a command last remembered for itself, if any. */
 export function getLastAgainst(cwd: string, command: string): string | undefined {
   return readState(cwd).lastAgainstByCommand?.[command];
@@ -39,22 +45,31 @@ export function getLastAgainst(cwd: string, command: string): string | undefined
 export function setLastAgainst(cwd: string, command: string, branch: string): void {
   const state = readState(cwd);
   state.lastAgainstByCommand = { ...state.lastAgainstByCommand, [command]: branch };
-  mkdirSync(join(cwd, ".git"), { recursive: true });
-  writeFileSync(statePath(cwd), JSON.stringify(state, null, 2));
+  writeState(cwd, state);
 }
 
-/** Shared --help footer for commands that remember their `--against` branch. */
+/** The `--remote` a command last remembered for itself, if any. */
+export function getLastRemote(cwd: string, command: string): string | undefined {
+  return readState(cwd).lastRemoteByCommand?.[command];
+}
+
+/** Remembers `remote` as the given command's `--remote` choice for next time. */
+export function setLastRemote(cwd: string, command: string, remote: string): void {
+  const state = readState(cwd);
+  state.lastRemoteByCommand = { ...state.lastRemoteByCommand, [command]: remote };
+  writeState(cwd, state);
+}
+
+/** Shared --help footer for commands that remember their `--against`/`--remote` choices. */
 export function branchMemoryHelpText(command: string): string {
   return (
     "\nBranch memory:\n" +
-    `  The last branch passed to --against is remembered per repository, in\n` +
-    `  .git/${STATE_FILENAME}, and reused on the next '${command}' run that\n` +
-    "  omits --against. To see it: cat .git/" +
-    STATE_FILENAME +
-    "\n" +
-    `  To change it: pass --against <branch> again, or edit that file's\n` +
-    `  lastAgainstByCommand.${command} value directly.\n` +
-    "  To reset it: delete that key (or the whole file) — falls back to\n" +
-    "  'main'/'master' after that.\n"
+    `  The last --against and --remote passed are each remembered per\n` +
+    `  repository, in .git/${STATE_FILENAME}, and reused on the next\n` +
+    `  '${command}' run that omits them. To see it: cat .git/${STATE_FILENAME}\n` +
+    `  To change one: pass it again, or edit that file's\n` +
+    `  lastAgainstByCommand.${command} / lastRemoteByCommand.${command} value directly.\n` +
+    "  To reset one: delete that key (or the whole file) — falls back to\n" +
+    "  'main'/'master' on 'origin' after that.\n"
   );
 }

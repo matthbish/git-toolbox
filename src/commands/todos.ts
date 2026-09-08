@@ -1,7 +1,18 @@
 import { Command } from "commander";
-import { repoRoot, mainOrMasterBranch, diffAgainstWorkingTree } from "../lib/git.js";
+import {
+  repoRoot,
+  mainOrMasterBranch,
+  diffAgainstWorkingTree,
+  fetchRemoteRef,
+} from "../lib/git.js";
 import { UsageError } from "../lib/errors.js";
-import { getLastAgainst, setLastAgainst, branchMemoryHelpText } from "../lib/state.js";
+import {
+  getLastAgainst,
+  setLastAgainst,
+  getLastRemote,
+  setLastRemote,
+  branchMemoryHelpText,
+} from "../lib/state.js";
 
 /** Pure parsing logic, kept separate from git/IO so it's easy to unit test. */
 export function extractAddedTodos(diff: string): Record<string, string[]> {
@@ -40,11 +51,15 @@ export function extractAddedTodos(diff: string): Record<string, string[]> {
  *
  * Diffs against, in order: the branch passed via --against; failing that,
  * whatever branch was last passed to --against for this repo; failing
- * that, "main" if it exists, else "master".
+ * that, "main" if it exists, else "master". The remote whose copy of that
+ * branch is used (--remote; remembered the same way; defaults to "origin")
+ * is always freshly fetched, so the comparison reflects the remote branch's
+ * current state rather than whatever the local branch of that name points at.
  *
  * Examples:
  *   git-toolbox todos
  *   git-toolbox todos --against develop
+ *   git-toolbox todos --against develop --remote upstream
  */
 export function registerTodos(program: Command): void {
   program
@@ -54,32 +69,42 @@ export function registerTodos(program: Command): void {
       "--against <branch>",
       "branch to diff against (defaults to the last branch used, then 'main'/'master')",
     )
+    .option(
+      "--remote <remote>",
+      "remote whose copy of the branch to diff against (defaults to the last remote used, then 'origin')",
+    )
     .addHelpText("after", branchMemoryHelpText("todos"))
-    .action((options: { against?: string }) => {
+    .action((options: { against?: string; remote?: string }) => {
       const cwd = repoRoot();
-      const against = options.against ?? getLastAgainst(cwd, "todos") ?? mainOrMasterBranch(cwd);
+      const remote = options.remote ?? getLastRemote(cwd, "todos") ?? "origin";
+      const against =
+        options.against ?? getLastAgainst(cwd, "todos") ?? mainOrMasterBranch(cwd, remote);
 
       if (!against) {
         throw new UsageError(
           "Could not determine a branch to diff against (no remembered branch, and " +
-            "neither 'main' nor 'master' exists); pass --against <branch>.",
+            `neither 'main' nor 'master' exists on '${remote}'); pass --against <branch>.`,
         );
       }
 
       if (options.against) {
         setLastAgainst(cwd, "todos", options.against);
       }
+      if (options.remote) {
+        setLastRemote(cwd, "todos", options.remote);
+      }
 
-      const diff = diffAgainstWorkingTree(cwd, against, ["--unified=0"]);
+      const remoteRef = fetchRemoteRef(cwd, remote, against);
+      const diff = diffAgainstWorkingTree(cwd, remoteRef, ["--unified=0"]);
       const todosByFile = extractAddedTodos(diff);
       const files = Object.keys(todosByFile);
 
       if (files.length === 0) {
-        console.log(`No added TODOs found vs '${against}'.`);
+        console.log(`No added TODOs found vs '${remoteRef}'.`);
         return;
       }
 
-      console.log(`Added TODOs vs '${against}':\n`);
+      console.log(`Added TODOs vs '${remoteRef}':\n`);
       for (const file of files) {
         console.log(`${file}:`);
         for (const todo of todosByFile[file] ?? []) console.log(`  - ${todo}`);

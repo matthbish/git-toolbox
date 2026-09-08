@@ -8,10 +8,9 @@ import { runInherit } from "../lib/exec.js";
  * Stages every change, folds it into the last commit, and force-pushes.
  * Useful for quick fixups to a commit you haven't shared review of yet.
  *
- * This rewrites history on the remote branch — don't run it on a commit
- * someone else has already pulled or built on. It uses `--force-with-lease`
- * rather than a plain `--force`, so the push is rejected (instead of
- * silently overwriting) if the remote branch moved since your last fetch.
+ * This rewrites history on the remote branch and force-pushes with a plain
+ * `--force` — don't run it on a commit someone else has already pulled or
+ * built on.
  *
  * Examples:
  *   git-toolbox amend
@@ -37,7 +36,7 @@ export function registerAmend(program: Command): void {
         : ["commit", "--amend", "--no-edit"];
 
       runInherit("git", commitArgs, { cwd });
-      runInherit("git", ["push", "--force-with-lease", "origin", branch], { cwd });
+      runInherit("git", ["push", "--force", "origin", branch], { cwd });
 
       console.log(`Amended and force-pushed '${branch}'.`);
     });

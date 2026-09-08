@@ -40,11 +40,11 @@ describe("running the built CLI (as an npm install would)", () => {
 
     const first = runDistCli(["todos", "--against", "main"], repo.dir);
     expect(first.status).toBe(0);
-    expect(first.stdout).toMatch(/vs 'main'/);
+    expect(first.stdout).toMatch(/vs 'origin\/main'/);
 
     const second = runDistCli(["todos"], repo.dir);
     expect(second.status).toBe(0);
-    expect(second.stdout).toMatch(/vs 'main'/);
+    expect(second.stdout).toMatch(/vs 'origin\/main'/);
 
     const stateFile = join(repo.dir, ".git", "git-toolbox-state.json");
     expect(existsSync(stateFile)).toBe(true);
